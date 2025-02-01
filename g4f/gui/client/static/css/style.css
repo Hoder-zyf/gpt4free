@@ -221,12 +221,12 @@ body:not(.white) a:visited{
     background-color: var(--blur-bg);
 }
 
-.conversations i, .bottom_buttons i {
+.conversations i, .bottom_buttons i, .mem0 button i {
     color: var(--conversations);
     cursor: pointer;
 }
 
-.bottom_buttons i {
+.bottom_buttons i, .mem0 button i {
     width: 14px;
 }
 
@@ -374,6 +374,29 @@ body:not(.white) a:visited{
 
 .message .content .audio{
     display: flex;
+}
+
+.message .reasoning_text.final:not(.hidden), .message .reasoning_title {
+    margin-bottom: var(--inner-gap);
+    padding-bottom: var(--inner-gap);
+    border-bottom: 1px solid var(--colour-3);
+    overflow: hidden;
+}
+
+.message .reasoning_text.final {
+    max-height: 1000px;
+    transition: max-height 0.25s ease-in;
+}
+
+.message .reasoning_text.final.hidden {
+    transition: max-height 0.15s ease-out;
+    max-height: 0;
+    display: block;
+    overflow: hidden;
+}
+
+.message .reasoning_title {
+    cursor: pointer;
 }
 
 .message .user i {
@@ -948,10 +971,10 @@ select:hover,
     }
 }
 
-.input-box {
+.input-area {
     display: flex;
     align-items: center;
-    cursor: pointer;
+    padding: 10px;
 }
 
 .info {
@@ -975,7 +998,7 @@ select:hover,
     margin: 4px 0;
 }
 
-.bottom_buttons button {
+.bottom_buttons button, .mem0 button {
     padding: 8px 12px;
     display: flex;
     gap: 18px;
@@ -988,10 +1011,15 @@ select:hover,
     width: 100%;
 }
 
+.mem0 button {
+    width: auto;
+}
+
 .bottom_buttons button a,
 .bottom_buttons button span,
 .bottom_buttons .info a,
-.bottom_buttons .info i {
+.bottom_buttons .info i,
+.mem0 button span {
     color: var(--colour-3);
     font-weight: 500;
 }
@@ -1106,7 +1134,6 @@ ul {
     padding-left: 10px;
     padding-top: 10px;
 }
-
 @media screen and (max-width: 990px) {
     .conversations {
         display: none;
@@ -1123,6 +1150,7 @@ ul {
         align-items: flex-start;
         flex-wrap: wrap;
         gap: 8px;
+        padding-left: 4px;
     }
 
     .mobile-sidebar {
@@ -1290,17 +1318,18 @@ ul {
     border: 1px dashed #e4d4ffa6;
     border-radius: 4px;
     cursor: pointer;
-    padding-left: 4px;
-    padding-right: 5px;
-    padding-top: 2px;
-    padding-bottom: 2px;
     position: absolute;
     bottom: 8px;
-    right: 8px;
+    right: 4px;
+    padding: 4px;
 }
 
 #send-button:hover {
     border: 1px solid #e4d4ffc9;
+}
+
+#send-button i {
+    padding: 2px;
 }
 
 form textarea {
@@ -1386,6 +1415,49 @@ form .field.saved .fa-xmark {
     line-height: 30px;
 }
 
+.collapsible {
+    border: 1px solid var(--blur-border);
+    border-radius: var(--border-radius-1);
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.collapsible-header {
+    padding: 10px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: var(--blur-bg);
+}
+
+.collapsible-header:hover {
+    background-color: var(--button-hover);
+}
+
+.collapsible-content {
+    padding: 10px;
+}
+
+.collapsible-content.hidden {
+    display: none;
+}
+
+.provider-item {
+    padding: 5px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.fa-chevron-down {
+    transition: transform 0.3s ease;
+}
+
+.collapsible-header.active .fa-chevron-down {
+    transform: rotate(180deg);
+}
+
 ::-webkit-scrollbar-track {
     background: var(--scrollbar);
 }
@@ -1407,7 +1479,13 @@ form .field.saved .fa-xmark {
 
 #message-input {
     height: 90px;
-    margin-left: 20px;
+    flex: 1;
+    padding: 10px;
+    padding-left: 24px;
+    border-radius: 20px;
+    font-size: 14px;
+    margin-right: 10px;
+    outline: none;
     max-height: 200px;
 }
 

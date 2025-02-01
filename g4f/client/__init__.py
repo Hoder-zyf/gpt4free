@@ -70,6 +70,8 @@ def iter_response(
             continue
         elif isinstance(chunk, SynthesizeData) or not chunk:
             continue
+        elif isinstance(chunk, Exception):
+            continue
 
         chunk = str(chunk)
         content += chunk
@@ -148,6 +150,8 @@ async def async_iter_response(
                 usage = chunk
                 continue
             elif isinstance(chunk, SynthesizeData) or not chunk:
+                continue
+            elif isinstance(chunk, Exception):
                 continue
 
             chunk = str(chunk)
@@ -237,21 +241,21 @@ class Completions:
         max_tokens: Optional[int] = None,
         stop: Optional[Union[list[str], str]] = None,
         api_key: Optional[str] = None,
-        ignored: Optional[list[str]] = None,
         ignore_working: Optional[bool] = False,
         ignore_stream: Optional[bool] = False,
         **kwargs
     ) -> ChatCompletion:
+        if image is not None:
+            kwargs["images"] = [(image, image_name)]
         model, provider = get_model_and_provider(
             model,
             self.provider if provider is None else provider,
             stream,
             ignore_working,
             ignore_stream,
+            has_images="images" in kwargs
         )
         stop = [stop] if isinstance(stop, str) else stop
-        if image is not None:
-            kwargs["images"] = [(image, image_name)]
         if ignore_stream:
             kwargs["ignore_stream"] = True
 
@@ -268,8 +272,6 @@ class Completions:
             ),
             **kwargs
         )
-        if not hasattr(response, '__iter__'):
-            response = [response]
 
         response = iter_response(response, stream, response_format, max_tokens, stop)
         response = iter_append_model_and_provider(response, model, provider)
@@ -471,7 +473,7 @@ class Images:
         elif response_format == "b64_json":
             # Convert URLs directly to base64 without saving
             async def get_b64_from_url(url: str) -> Image:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(cookies=response.get("cookies")) as session:
                     async with session.get(url, proxy=proxy) as resp:
                         if resp.status == 200:
                             image_data = await resp.read()
@@ -525,25 +527,26 @@ class AsyncCompletions:
         max_tokens: Optional[int] = None,
         stop: Optional[Union[list[str], str]] = None,
         api_key: Optional[str] = None,
-        ignored: Optional[list[str]] = None,
         ignore_working: Optional[bool] = False,
         ignore_stream: Optional[bool] = False,
         **kwargs
     ) -> Awaitable[ChatCompletion]:
+        if image is not None:
+            kwargs["images"] = [(image, image_name)]
         model, provider = get_model_and_provider(
             model,
             self.provider if provider is None else provider,
             stream,
             ignore_working,
             ignore_stream,
+            has_images="images" in kwargs,
         )
         stop = [stop] if isinstance(stop, str) else stop
-        if image is not None:
-            kwargs["images"] = [(image, image_name)]
         if ignore_stream:
             kwargs["ignore_stream"] = True
+            
         response = async_iter_run_tools(
-            provider.get_async_create_function(),
+            provider,
             model,
             messages,
             stream=stream,
@@ -555,9 +558,14 @@ class AsyncCompletions:
             ),
             **kwargs
         )
+
         response = async_iter_response(response, stream, response_format, max_tokens, stop)
         response = async_iter_append_model_and_provider(response, model, provider)
-        return response if stream else anext(response)
+
+        if stream:
+            return response
+        else:
+            return anext(response)
 
     def stream(
         self,

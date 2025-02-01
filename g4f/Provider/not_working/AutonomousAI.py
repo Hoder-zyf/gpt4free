@@ -4,10 +4,10 @@ from aiohttp import ClientSession
 import base64
 import json
 
-from ..typing import AsyncResult, Messages
-from ..requests.raise_for_status import raise_for_status
-from ..providers.response import FinishReason
-from .base_provider import AsyncGeneratorProvider, ProviderModelMixin
+from ...typing import AsyncResult, Messages
+from ...requests.raise_for_status import raise_for_status
+from ...providers.response import FinishReason
+from ..base_provider import AsyncGeneratorProvider, ProviderModelMixin
 
 class AutonomousAI(AsyncGeneratorProvider, ProviderModelMixin):
     url = "https://www.autonomous.ai/anon/"
@@ -19,7 +19,7 @@ class AutonomousAI(AsyncGeneratorProvider, ProviderModelMixin):
         "summary": "https://chatgpt.autonomous.ai/api/v1/ai/summary"
     }
     
-    working = True
+    working = False
     supports_stream = True
     supports_system_message = True
     supports_message_history = True
@@ -32,6 +32,7 @@ class AutonomousAI(AsyncGeneratorProvider, ProviderModelMixin):
         "qwen-2.5-coder-32b": "qwen_coder",
         "hermes-3": "hermes",
         "llama-3.2-90b": "vision",
+        "llama-3.2-70b": "summary",
     }
 
     @classmethod

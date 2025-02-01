@@ -11,37 +11,32 @@ from ...errors import ModelNotFoundError, ModelNotSupportedError, ResponseError
 from ...requests import StreamSession, raise_for_status
 from ...providers.response import FinishReason
 from ...image import ImageResponse
+from ..helper import format_image_prompt
+from .models import default_model, default_image_model, model_aliases, fallback_models
 from ... import debug
 
-from .HuggingChat import HuggingChat
-
-class HuggingFace(AsyncGeneratorProvider, ProviderModelMixin):
+class HuggingFaceInference(AsyncGeneratorProvider, ProviderModelMixin):
     url = "https://huggingface.co"
-    login_url = "https://huggingface.co/settings/tokens"
     working = True
-    supports_message_history = True
-    default_model = HuggingChat.default_model
-    default_image_model = HuggingChat.default_image_model
-    model_aliases = HuggingChat.model_aliases
-    extra_models = [
-        "meta-llama/Llama-3.2-11B-Vision-Instruct",
-        "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
-        "NousResearch/Hermes-3-Llama-3.1-8B",
-    ]
+
+    default_model = default_model
+    default_image_model = default_image_model
+    model_aliases = model_aliases
 
     @classmethod
     def get_models(cls) -> list[str]:
         if not cls.models:
+            models = fallback_models.copy()
             url = "https://huggingface.co/api/models?inference=warm&pipeline_tag=text-generation"
-            models = [model["id"] for model in requests.get(url).json()]
-            models.extend(cls.extra_models)
-            models.sort()
+            extra_models = [model["id"] for model in requests.get(url).json()]
+            extra_models.sort()
+            models.extend([model for model in extra_models if model not in models])
             if not cls.image_models:
                 url = "https://huggingface.co/api/models?pipeline_tag=text-to-image"
                 cls.image_models = [model["id"] for model in requests.get(url).json() if model["trendingScore"] >= 20]
                 cls.image_models.sort()
-                models.extend(cls.image_models)
-            cls.models = list(set(models))
+                models.extend([model for model in cls.image_models if model not in models])
+            cls.models = models
         return cls.models
 
     @classmethod
@@ -85,7 +80,7 @@ class HuggingFace(AsyncGeneratorProvider, ProviderModelMixin):
         payload = None
         if cls.get_models() and model in cls.image_models:
             stream = False
-            prompt = messages[-1]["content"] if prompt is None else prompt
+            prompt = format_image_prompt(messages, prompt)
             payload = {"inputs": prompt, "parameters": {"seed": random.randint(0, 2**32), **extra_data}}
         else:
             params = {
@@ -102,6 +97,8 @@ class HuggingFace(AsyncGeneratorProvider, ProviderModelMixin):
         ) as session:
             if payload is None:
                 async with session.get(f"https://huggingface.co/api/models/{model}") as response:
+                    if response.status == 404:
+                        raise ModelNotSupportedError(f"Model is not supported: {model} in: {cls.__name__}")
                     await raise_for_status(response)
                     model_data = await response.json()
                     model_type = None
@@ -143,7 +140,7 @@ class HuggingFace(AsyncGeneratorProvider, ProviderModelMixin):
                             else:
                                 is_special = True
                     debug.log(f"Special token: {is_special}")
-                    yield FinishReason("stop" if is_special else "length", actions=["variant"] if is_special else ["continue", "variant"])
+                    yield FinishReason("stop" if is_special else "length")
                 else:
                     if response.headers["content-type"].startswith("image/"):
                         base64_data = base64.b64encode(b"".join([chunk async for chunk in response.iter_content()]))
@@ -170,6 +167,14 @@ def format_prompt_qwen(messages: Messages, do_continue: bool = False) -> str:
     ]) + ("" if do_continue else "<|im_start|>assistant\n")
     if do_continue:
         return prompt[:-len("\n<|im_end|>\n")]
+    return prompt
+
+def format_prompt_qwen2(messages: Messages, do_continue: bool = False) -> str:
+    prompt = "".join([
+        f"\u003C｜{message['role'].capitalize()}｜\u003E{message['content']}\u003C｜end▁of▁sentence｜\u003E" for message in messages
+    ]) + ("" if do_continue else "\u003C｜Assistant｜\u003E")
+    if do_continue:
+        return prompt[:-len("\u003C｜Assistant｜\u003E")]
     return prompt
 
 def format_prompt_llama(messages: Messages, do_continue: bool = False) -> str:
@@ -199,6 +204,8 @@ def get_inputs(messages: Messages, model_data: dict, model_type: str, do_continu
             inputs = format_prompt_custom(messages, eos_token, do_continue)
         elif eos_token == "<|im_end|>":
             inputs = format_prompt_qwen(messages, do_continue)
+        elif "content" in eos_token and eos_token["content"] == "\u003C｜end▁of▁sentence｜\u003E":
+            inputs = format_prompt_qwen2(messages, do_continue)
         elif eos_token == "<|eot_id|>":
             inputs = format_prompt_llama(messages, do_continue)
         else:

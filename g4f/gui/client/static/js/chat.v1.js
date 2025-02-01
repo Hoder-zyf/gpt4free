@@ -35,9 +35,11 @@ let title_storage = {};
 let parameters_storage = {};
 let finish_storage = {};
 let usage_storage = {};
+let reasoning_storage = {}
+let is_demo = false;
 
 messageInput.addEventListener("blur", () => {
-    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
 });
 
 messageInput.addEventListener("focus", () => {
@@ -68,6 +70,18 @@ if (window.markdownit) {
             .replaceAll("<a href=", '<a target="_blank" href=')
             .replaceAll('<code>', '<code class="language-plaintext">')
     }
+}
+
+function render_reasoning(reasoning, final = false) {
+    const inner_text = reasoning.text ? `<div class="reasoning_text${final ? " final hidden" : ""}">
+        ${markdown_render(reasoning.text)}
+    </div>` : "";
+    return `<div class="reasoning_body">
+        <div class="reasoning_title">
+           <strong>Reasoning <i class="fa-solid fa-brain"></i>:</strong> ${escapeHtml(reasoning.status)}
+        </div>
+        ${inner_text}
+    </div>`;
 }
 
 function filter_message(text) {
@@ -169,7 +183,7 @@ const get_message_el = (el) => {
 }
 
 const register_message_buttons = async () => {
-    document.querySelectorAll(".message .content .provider").forEach(async (el) => {
+    message_box.querySelectorAll(".message .content .provider").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             const provider_forms = document.querySelector(".provider_forms");
@@ -192,7 +206,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .fa-xmark").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-xmark").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -203,7 +217,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .fa-clipboard").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-clipboard").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -226,25 +240,32 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .fa-file-export").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-file-export").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
-                let message_el = get_message_el(el);
                 const elem = window.document.createElement('a');
                 let filename = `chat ${new Date().toLocaleString()}.md`.replaceAll(":", "-");
-                elem.href = message_el.dataset.object_url;
+                const conversation = await get_conversation(window.conversation_id);
+                let buffer = "";
+                conversation.items.forEach(message => {
+                    buffer += `${message.role == 'user' ? 'User' : 'Assistant'}: ${message.content.trim()}\n\n\n`;
+                });
+                const file = new File([buffer.trim()], 'message.md', {type: 'text/plain'});
+                const objectUrl = URL.createObjectURL(file);
+                elem.href = objectUrl;
                 elem.download = filename;        
                 document.body.appendChild(elem);
                 elem.click();        
                 document.body.removeChild(elem);
                 el.classList.add("clicked");
                 setTimeout(() => el.classList.remove("clicked"), 1000);
+                URL.revokeObjectURL(objectUrl);
             })
         }
     });
 
-    document.querySelectorAll(".message .fa-volume-high").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-volume-high").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -270,7 +291,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .regenerate_button").forEach(async (el) => {
+    message_box.querySelectorAll(".message .regenerate_button").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -282,7 +303,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .continue_button").forEach(async (el) => {
+    message_box.querySelectorAll(".message .continue_button").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -297,7 +318,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .fa-whatsapp").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-whatsapp").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -307,7 +328,7 @@ const register_message_buttons = async () => {
         }
     });
 
-    document.querySelectorAll(".message .fa-print").forEach(async (el) => {
+    message_box.querySelectorAll(".message .fa-print").forEach(async (el) => {
         if (!("click" in el.dataset)) {
             el.dataset.click = "true";
             el.addEventListener("click", async () => {
@@ -320,6 +341,18 @@ const register_message_buttons = async () => {
                     message_el.classList.remove("print");
                 }, 1000);
                 window.print()
+            })
+        }
+    });
+
+    message_box.querySelectorAll(".message .reasoning_title").forEach(async (el) => {
+        if (!("click" in el.dataset)) {
+            el.dataset.click = "true";
+            el.addEventListener("click", async () => {
+                let text_el = el.parentElement.querySelector(".reasoning_text");
+                if (text_el) {
+                    text_el.classList[text_el.classList.contains("hidden") ? "remove" : "add"]("hidden");
+                }
             })
         }
     });
@@ -338,7 +371,7 @@ const delete_conversations = async () => {
     await new_conversation();
 };
 
-const handle_ask = async () => {
+const handle_ask = async (do_ask_gpt = true) => {
     messageInput.style.height = "82px";
     messageInput.focus();
     await scroll_to_bottom();
@@ -354,17 +387,19 @@ const handle_ask = async () => {
     let message_index = await add_message(window.conversation_id, "user", message);
     let message_id = get_message_id();
 
-    if (imageInput.dataset.objects) {
-        imageInput.dataset.objects.split(" ").forEach((object)=>URL.revokeObjectURL(object))
-        delete imageInput.dataset.objects;
-    }
-    const input = imageInput && imageInput.files.length > 0 ? imageInput : cameraInput
-    images = [];
-    if (input.files.length > 0) {
-        for (const file of input.files) {
-            images.push(URL.createObjectURL(file));
+    let images = [];
+    if (do_ask_gpt) {
+        if (imageInput.dataset.objects) {
+            imageInput.dataset.objects.split(" ").forEach((object)=>URL.revokeObjectURL(object))
+            delete imageInput.dataset.objects;
         }
-        imageInput.dataset.objects = images.join(" ");
+        const input = imageInput && imageInput.files.length > 0 ? imageInput : cameraInput
+        if (input.files.length > 0) {
+            for (const file of input.files) {
+                images.push(URL.createObjectURL(file));
+            }
+            imageInput.dataset.objects = images.join(" ");
+        }
     }
     message_box.innerHTML += `
         <div class="message" data-index="${message_index}">
@@ -385,18 +420,21 @@ const handle_ask = async () => {
         </div>
     `;
     highlight(message_box);
-
-    const all_pinned = document.querySelectorAll(".buttons button.pinned")
-    if (all_pinned.length > 0) {
-        all_pinned.forEach((el, idx) => ask_gpt(
-            idx == 0 ? message_id : get_message_id(),
-            -1,
-            idx != 0,
-            el.dataset.provider,
-            el.dataset.model
-        ));
+    if (do_ask_gpt) {
+        const all_pinned = document.querySelectorAll(".buttons button.pinned")
+        if (all_pinned.length > 0) {
+            all_pinned.forEach((el, idx) => ask_gpt(
+                idx == 0 ? message_id : get_message_id(),
+                -1,
+                idx != 0,
+                el.dataset.provider,
+                el.dataset.model
+            ));
+        } else {
+            await ask_gpt(message_id);
+        }
     } else {
-        await ask_gpt(message_id);
+        await lazy_scroll_to_bottom();
     }
 };
 
@@ -427,11 +465,14 @@ stop_generating.addEventListener("click", async () => {
     for (key in controller_storage) {
         if (!controller_storage[key].signal.aborted) {
             console.log(`aborted ${window.conversation_id} #${key}`);
-            controller_storage[key].abort();
-            let message = message_storage[key];
-            if (message) {
-                content_storage[key].inner.innerHTML += " [aborted]";
-                message_storage[key] += " [aborted]";
+            try {
+                controller_storage[key].abort();
+            } finally {
+                let message = message_storage[key];
+                if (message) {
+                    content_storage[key].inner.innerHTML += " [aborted]";
+                    message_storage[key] += " [aborted]";
+                }
             }
         }
     }
@@ -448,6 +489,8 @@ document.querySelector(".media_player .fa-x").addEventListener("click", ()=>{
 const prepare_messages = (messages, message_index = -1, do_continue = false, do_filter = true) => {
     messages = [ ...messages ]
     if (message_index != null) {
+        console.debug("Messages Index:", message_index);
+
         // Removes messages after selected
         if (message_index >= 0) {
             messages = messages.filter((_, index) => message_index >= index);
@@ -461,39 +504,49 @@ const prepare_messages = (messages, message_index = -1, do_continue = false, do_
                     break;
                 }
             }
+            console.debug("Messages filtered:", messages);
         }
     }
-    // Combine messages with same role
-    let last_message;
-    let new_messages = [];
-    messages.forEach((message) => {
-        message_copy = { ...message };
-        if (last_message) {
-            if (last_message["role"] == message["role"]) {
-                message_copy["content"] = last_message["content"] + message_copy["content"];
-                new_messages.pop();
-            }
-        }
-        last_message = message_copy;
-        new_messages.push(last_message);
-    });
-    messages = new_messages;
+    // Combine assistant messages
+    // let last_message;
+    // let new_messages = [];
+    // messages.forEach((message) => {
+    //     message_copy = { ...message };
+    //     if (last_message) {
+    //         if (last_message["role"] == message["role"] &&  message["role"] == "assistant") {
+    //             message_copy["content"] = last_message["content"] + message_copy["content"];
+    //             new_messages.pop();
+    //         }
+    //     }
+    //     last_message = message_copy;
+    //     new_messages.push(last_message);
+    // });
+    // messages = new_messages;
+    // console.log(2, messages);
 
     // Insert system prompt as first message
-    new_messages = [];
+    let final_messages = [];
     if (chatPrompt?.value) {
-        new_messages.push({
+        final_messages.push({
             "role": "system",
             "content": chatPrompt.value
         });
     }
 
-    // Remove history, if it's selected
-    if (document.getElementById('history')?.checked && do_filter) {
-        if (message_index == null) {
-            messages = [messages.pop(), messages.pop()];
-        } else {
-            messages = [messages.pop()];
+    // Remove history, only add new user messages
+    let filtered_messages = [];
+    // The message_index is null on count total tokens
+    if (document.getElementById('history')?.checked && do_filter && message_index != null) {
+        while (last_message = messages.pop()) {
+            if (last_message["role"] == "user") {
+                filtered_messages.push(last_message);
+            } else {
+                break;
+            }
+        }
+        messages = filtered_messages.reverse();
+        if (last_message) {
+            console.debug("History removed:", messages)
         }
     }
 
@@ -506,7 +559,7 @@ const prepare_messages = (messages, message_index = -1, do_continue = false, do_
         }
         // Include only not regenerated messages
         if (new_message) {
-            // Remove generated images from history
+            // Remove generated images from content
             if (new_message.content) {
                 new_message.content = filter_message(new_message.content);
             }
@@ -515,18 +568,20 @@ const prepare_messages = (messages, message_index = -1, do_continue = false, do_
             delete new_message.synthesize;
             delete new_message.finish;
             delete new_message.usage;
+            delete new_message.reasoning;
             delete new_message.conversation;
             delete new_message.continue;
             // Append message to new messages
             if (do_filter && !new_message.regenerate) {
-                new_messages.push(new_message)
+                final_messages.push(new_message)
             } else if (!do_filter) {
-                new_messages.push(new_message)
+                final_messages.push(new_message)
             }
         }
     });
+    console.debug("Final messages:", final_messages)
 
-    return new_messages;
+    return final_messages;
 }
 
 async function load_provider_parameters(provider) {
@@ -660,7 +715,7 @@ async function load_provider_parameters(provider) {
     }
 }
 
-async function add_message_chunk(message, message_id, provider, scroll) {
+async function add_message_chunk(message, message_id, provider, scroll, finish_message=null) {
     content_map = content_storage[message_id];
     if (message.type == "conversation") {
         const conversation = await get_conversation(window.conversation_id);
@@ -682,15 +737,17 @@ async function add_message_chunk(message, message_id, provider, scroll) {
         `;
     } else if (message.type == "message") {
         console.error(message.message)
+        await api("log", {...message, provider: provider_storage[message_id]});
     } else if (message.type == "error") {
         content_map.update_timeouts.forEach((timeoutId)=>clearTimeout(timeoutId));
         content_map.update_timeouts = [];
-        error_storage[message_id] = message.error
-        console.error(message.error);
-        content_map.inner.innerHTML += markdown_render(`**An error occured:** ${message.error}`);
+        error_storage[message_id] = message.message
+        console.error(message.message);
+        content_map.inner.innerHTML += markdown_render(`**An error occured:** ${message.message}`);
         let p = document.createElement("p");
         p.innerText = message.error;
         log_storage.appendChild(p);
+        await api("log", {...message, provider: provider_storage[message_id]});
     } else if (message.type == "preview") {
         if (content_map.inner.clientHeight > 200)
             content_map.inner.style.height = content_map.inner.clientHeight + "px";
@@ -711,11 +768,24 @@ async function add_message_chunk(message, message_id, provider, scroll) {
     } else if (message.type == "title") {
         title_storage[message_id] = message.title;
     } else if (message.type == "login") {
-        update_message(content_map, message_id, message.login, scroll);
+        update_message(content_map, message_id, markdown_render(message.login), scroll);
     } else if (message.type == "finish") {
         finish_storage[message_id] = message.finish;
+        if (finish_message) {
+            await finish_message();
+        }
     } else if (message.type == "usage") {
         usage_storage[message_id] = message.usage;
+    } else if (message.type == "reasoning") {
+        if (!reasoning_storage[message_id]) {
+            reasoning_storage[message_id] = message;
+            reasoning_storage[message_id].text = message.token || "";
+        } else if (message.status) {
+            reasoning_storage[message_id].status = message.status;
+        } else if (message.token) {
+            reasoning_storage[message_id].text += message.token;
+        }
+        update_message(content_map, message_id, render_reasoning(reasoning_storage[message_id]), scroll);
     } else if (message.type == "parameters") {
         if (!parameters_storage[provider]) {
             parameters_storage[provider] = {};
@@ -737,9 +807,12 @@ function is_stopped() {
 const ask_gpt = async (message_id, message_index = -1, regenerate = false, provider = null, model = null, action = null) => {
     if (!model && !provider) {
         model = get_selected_model()?.value || null;
-        provider = providerSelect.options[providerSelect.selectedIndex].value;
+        provider = providerSelect.options[providerSelect.selectedIndex]?.value;
     }
     let conversation = await get_conversation(window.conversation_id);
+    if (!conversation) {
+        return;
+    }
     messages = prepare_messages(conversation.items, message_index, action=="continue");
     message_storage[message_id] = "";
     stop_generating.classList.remove("stop_generating-hidden");
@@ -796,17 +869,114 @@ const ask_gpt = async (message_id, message_index = -1, regenerate = false, provi
     if (scroll) {
         await lazy_scroll_to_bottom();
     }
+    async function finish_message() {
+        content_map.update_timeouts.forEach((timeoutId)=>clearTimeout(timeoutId));
+        content_map.update_timeouts = [];
+        if (!error_storage[message_id] && message_storage[message_id]) {
+            html = markdown_render(message_storage[message_id]);
+            content_map.inner.innerHTML = html;
+            highlight(content_map.inner);
+            if (imageInput) imageInput.value = "";
+            if (cameraInput) cameraInput.value = "";
+        }
+        if (message_storage[message_id]) {
+            const message_provider = message_id in provider_storage ? provider_storage[message_id] : null;
+            let usage = {};
+            if (usage_storage[message_id]) {
+                usage = usage_storage[message_id];
+                delete usage_storage[message_id];
+            }
+            usage = {
+                model: message_provider?.model,
+                provider: message_provider?.name,
+                ...usage
+            }
+            // Calculate usage if we don't have it jet
+            if (document.getElementById("track_usage").checked && !usage.prompt_tokens && window.GPTTokenizer_cl100k_base) {
+                const prompt_token_model = model?.startsWith("gpt-3") ? "gpt-3.5-turbo" : "gpt-4"
+                const prompt_tokens = GPTTokenizer_cl100k_base?.encodeChat(messages, prompt_token_model).length;
+                const completion_tokens = count_tokens(message_provider?.model, message_storage[message_id]);
+                usage = {
+                    ...usage,
+                    prompt_tokens: prompt_tokens,
+                    completion_tokens: completion_tokens,
+                    total_tokens: prompt_tokens + completion_tokens
+                }
+            }
+            // It is not regenerated, if it is the first response to a new question
+            if (regenerate && message_index == -1) {
+                let conversation = await get_conversation(window.conversation_id);
+                regenerate = conversation.items[conversation.items.length-1]["role"] != "user";
+            }
+            // Create final message content
+            const final_message = message_storage[message_id]
+                                + (error_storage[message_id] ? " [error]" : "")
+                                + (stop_generating.classList.contains('stop_generating-hidden') ? " [aborted]" : "")
+            // Save message in local storage
+            await add_message(
+                window.conversation_id,
+                "assistant",
+                final_message,
+                message_provider,
+                message_index,
+                synthesize_storage[message_id],
+                regenerate,
+                title_storage[message_id],
+                finish_storage[message_id],
+                usage,
+                reasoning_storage[message_id],
+                action=="continue"
+            );
+            delete message_storage[message_id];
+            // Send usage to the server
+            if (document.getElementById("track_usage").checked) {
+                const user = localStorage.getItem("user");
+                if (user) {
+                    usage = {user: user, ...usage};
+                }
+                api("usage", usage);
+            }
+        }
+        // Update controller storage
+        if (controller_storage[message_id]) {
+            delete controller_storage[message_id];
+        }
+        // Reload conversation if no error
+        if (!error_storage[message_id]) {
+            await safe_load_conversation(window.conversation_id, scroll);
+        }
+        let cursorDiv = message_el.querySelector(".cursor");
+        if (cursorDiv) cursorDiv.parentNode.removeChild(cursorDiv);
+        if (scroll) {
+            await lazy_scroll_to_bottom();
+        }
+        await safe_remove_cancel_button();
+        await register_message_buttons();
+        await load_conversations();
+        regenerate_button.classList.remove("regenerate-hidden");
+    }
     try {
+        let api_key;
+        if (is_demo && provider == "Feature") {
+            api_key = localStorage.getItem("user");
+        } else if (is_demo && provider != "Custom") {
+            api_key = localStorage.getItem("HuggingFace-api_key");
+        } else {
+            api_key = get_api_key_by_provider(provider);
+        }
+        if (is_demo && !api_key && provider != "Custom") {
+            location.href = "/";
+            return;
+        }
         const input = imageInput && imageInput.files.length > 0 ? imageInput : cameraInput;
         const files = input && input.files.length > 0 ? input.files : null;
         const download_images = document.getElementById("download_images")?.checked;
-        const api_key = get_api_key_by_provider(provider);
         const api_base = provider == "Custom" ? document.getElementById(`${provider}-api_base`).value : null;
         const ignored = Array.from(settings.querySelectorAll("input.provider:not(:checked)")).map((el)=>el.value);
         await api("conversation", {
             id: message_id,
             conversation_id: window.conversation_id,
-            conversation: conversation.data && provider in conversation.data ? conversation.data[provider] : null,
+            conversation: provider && conversation.data && provider in conversation.data ? conversation.data[provider] : null,
             model: model,
             web_search: switchInput.checked,
             provider: provider,
@@ -816,53 +986,15 @@ const ask_gpt = async (message_id, message_index = -1, regenerate = false, provi
             api_key: api_key,
             api_base: api_base,
             ignored: ignored,
-        }, files, message_id, scroll);
-        content_map.update_timeouts.forEach((timeoutId)=>clearTimeout(timeoutId));
-        content_map.update_timeouts = [];
-        if (!error_storage[message_id]) {
-            html = markdown_render(message_storage[message_id]);
-            content_map.inner.innerHTML = html;
-            highlight(content_map.inner);
-            if (imageInput) imageInput.value = "";
-            if (cameraInput) cameraInput.value = "";
-        }
+        }, files, message_id, scroll, finish_message);
     } catch (e) {
         console.error(e);
         if (e.name != "AbortError") {
             error_storage[message_id] = true;
             content_map.inner.innerHTML += markdown_render(`**An error occured:** ${e}`);
         }
+        await finish_message();
     }
-    if (message_storage[message_id]) {
-        const message_provider = message_id in provider_storage ? provider_storage[message_id] : null;
-        await add_message(
-            window.conversation_id,
-            "assistant",
-            message_storage[message_id] + (error_storage[message_id] ? " [error]" : "") + (stop_generating.classList.contains('stop_generating-hidden') ? " [aborted]" : ""),
-            message_provider,
-            message_index,
-            synthesize_storage[message_id],
-            regenerate,
-            title_storage[message_id],
-            finish_storage[message_id],
-            usage_storage[message_id],
-            action=="continue"
-        );
-        delete controller_storage[message_id];
-        delete message_storage[message_id];
-        if (!error_storage[message_id]) {
-            await safe_load_conversation(window.conversation_id, scroll);
-        }
-    }
-    let cursorDiv = message_el.querySelector(".cursor");
-    if (cursorDiv) cursorDiv.parentNode.removeChild(cursorDiv);
-    if (scroll) {
-        await lazy_scroll_to_bottom();
-    }
-    await safe_remove_cancel_button();
-    await register_message_buttons();
-    await load_conversations();
-    regenerate_button.classList.remove("regenerate-hidden");
 };
 
 async function scroll_to_bottom() {
@@ -1042,6 +1174,7 @@ function merge_messages(message1, message2) {
 const load_conversation = async (conversation_id, scroll=true) => {
     let conversation = await get_conversation(conversation_id);
     let messages = conversation?.items || [];
+    console.debug("Conversation:", conversation)
 
     if (!conversation) {
         return;
@@ -1098,11 +1231,8 @@ const load_conversation = async (conversation_id, scroll=true) => {
         let add_buttons = [];
         // Find buttons to add
         actions = ["variant"]
-        if (item.finish && item.finish.actions) {
-            actions = item.finish.actions
-        }
         // Add continue button if possible
-        if (item.role == "assistant" && !actions.includes("continue")) {
+        if (item.role == "assistant") {
             let reason = "stop";
             // Read finish reason from conversation
             if (item.finish && item.finish.reason) {
@@ -1167,7 +1297,10 @@ const load_conversation = async (conversation_id, scroll=true) => {
                 </div>
                 <div class="content">
                     ${provider}
-                    <div class="content_inner">${markdown_render(buffer)}</div>
+                    <div class="content_inner">
+                        ${item.reasoning ? render_reasoning(item.reasoning, true): ""}
+                        ${markdown_render(buffer)}
+                    </div>
                     <div class="count">
                         ${count_words_and_tokens(buffer, next_provider?.model, completion_tokens, prompt_tokens)}
                         ${add_buttons.join("")}
@@ -1298,6 +1431,7 @@ const add_message = async (
     title = null,
     finish = null,
     usage = null,
+    reasoning = null,
     do_continue = false
 ) => {
     const conversation = await get_conversation(conversation_id);
@@ -1328,6 +1462,9 @@ const add_message = async (
     }
     if (usage) {
         new_message.usage = usage;
+    }
+    if (reasoning) {
+        new_message.reasoning = reasoning;
     }
     if (do_continue) {
         new_message.continue = true;
@@ -1425,23 +1562,25 @@ async function hide_sidebar() {
     settings.classList.add("hidden");
     chat.classList.remove("hidden");
     log_storage.classList.add("hidden");
-    if (window.location.pathname == "/menu/" || window.location.pathname == "/settings/") {
+    await hide_settings();
+    if (window.location.pathname.endsWith("/menu/") || window.location.pathname.endsWith("/settings/")) {
         history.back();
     }
+}
+
+async function hide_settings() {
+    settings.classList.add("hidden");
+    let provider_forms = document.querySelectorAll(".provider_forms from");
+    Array.from(provider_forms).forEach((form) => form.classList.add("hidden"));
 }
 
 window.addEventListener('popstate', hide_sidebar, false);
 
 sidebar_button.addEventListener("click", async () => {
-    settings.classList.add("hidden");
-    let provider_forms = document.querySelectorAll(".provider_forms from");
-    Array.from(provider_forms).forEach((form) => form.classList.add("hidden"));
     if (sidebar.classList.contains("shown")) {
         await hide_sidebar();
     } else {
-        sidebar.classList.add("shown");
-        sidebar_button.classList.add("rotated");
-        add_url_to_history("/menu/");
+        await show_menu();
     }
     window.scrollTo(0, 0);
 });
@@ -1452,12 +1591,19 @@ function add_url_to_history(url) {
     }
 }
 
+async function show_menu() {
+    sidebar.classList.add("shown");
+    sidebar_button.classList.add("rotated");
+    await hide_settings();
+    add_url_to_history("/chat/menu/");
+}
+
 function open_settings() {
     if (settings.classList.contains("hidden")) {
         chat.classList.add("hidden");
         sidebar.classList.remove("shown");
         settings.classList.remove("hidden");
-        add_url_to_history("/settings/");
+        add_url_to_history("/chat/settings/");
     } else {
         settings.classList.add("hidden");
         chat.classList.remove("hidden");
@@ -1604,23 +1750,29 @@ function count_words_and_tokens(text, model, completion_tokens, prompt_tokens) {
 
 function update_message(content_map, message_id, content = null, scroll = true) {
     content_map.update_timeouts.push(setTimeout(() => {
-        if (!content) content = message_storage[message_id];
-        html = markdown_render(content);
-        let lastElement, lastIndex = null;
-        for (element of ['</p>', '</code></pre>', '</p>\n</li>\n</ol>', '</li>\n</ol>', '</li>\n</ul>']) {
-            const index = html.lastIndexOf(element)
-            if (index - element.length > lastIndex) {
-                lastElement = element;
-                lastIndex = index;
+        if (!content) {
+            if (reasoning_storage[message_id]) {
+                content = render_reasoning(reasoning_storage[message_id], true) + markdown_render(message_storage[message_id]);
+            } else {
+                content = markdown_render(message_storage[message_id]);
+            }
+            let lastElement, lastIndex = null;
+            for (element of ['</p>', '</code></pre>', '</p>\n</li>\n</ol>', '</li>\n</ol>', '</li>\n</ul>']) {
+                const index = content.lastIndexOf(element)
+                if (index - element.length > lastIndex) {
+                    lastElement = element;
+                    lastIndex = index;
+                }
+            }
+            if (lastIndex) {
+                content = content.substring(0, lastIndex) + '<span class="cursor"></span>' + lastElement;
             }
         }
-        if (lastIndex) {
-            html = html.substring(0, lastIndex) + '<span class="cursor"></span>' + lastElement;
-        }
         if (error_storage[message_id]) {
-            content_map.inner.innerHTML += markdown_render(`**An error occured:** ${error_storage[message_id]}`);
+            content_map.inner.innerHTML = message + markdown_render(`**An error occured:** ${error_storage[message_id]}`);
+        } else {
+            content_map.inner.innerHTML = content;
         }
-        content_map.inner.innerHTML = html;
         content_map.count.innerText = count_words_and_tokens(message_storage[message_id], provider_storage[message_id]?.model);
         highlight(content_map.inner);
         if (scroll) {
@@ -1634,7 +1786,11 @@ function update_message(content_map, message_id, content = null, scroll = true) 
 let countFocus = messageInput;
 const count_input = async () => {
     if (countFocus.value) {
-        inputCount.innerText = count_words_and_tokens(countFocus.value, get_selected_model()?.value);
+        if (window.matchMedia("(pointer:coarse)")) {
+            inputCount.innerText = `(${count_tokens(get_selected_model()?.value, countFocus.value)} tokens)`;
+        } else {
+            inputCount.innerText = count_words_and_tokens(countFocus.value, get_selected_model()?.value);
+        }
     } else {
         inputCount.innerText = "";
     }
@@ -1669,15 +1825,19 @@ window.addEventListener('pywebviewready', async function() {
 
 async function on_load() {
     count_input();
-    if (/\/chat\/[^?]+/.test(window.location.href)) {
+    if (/\/settings\//.test(window.location.href)) {
+        open_settings();
+    } else if (/\/chat\/[^?]+/.test(window.location.href)) {
         load_conversation(window.conversation_id);
     } else {
         chatPrompt.value = document.getElementById("systemPrompt")?.value || "";
         let chat_url = new URL(window.location.href)
         let chat_params = new URLSearchParams(chat_url.search);
         if (chat_params.get("prompt")) {
-            messageInput.value = chat_params.get("prompt");
-            await handle_ask();
+            messageInput.value = `${chat_params.title}\n${chat_params.prompt}\n${chat_params.url}`.trim();
+            messageInput.style.height = messageInput.scrollHeight  + "px";
+            messageInput.focus();
+            //await handle_ask();
         } else {
             say_hello()
         }
@@ -1725,97 +1885,171 @@ async function on_api() {
     messageInput.addEventListener("keydown", async (evt) => {
         if (prompt_lock) return;
         // If not mobile and not shift enter
-        if (!window.matchMedia("(pointer:coarse)").matches && evt.keyCode === 13 && !evt.shiftKey) {
+        let do_enter = messageInput.value.endsWith("\n\n");
+        if (do_enter || !window.matchMedia("(pointer:coarse)").matches && evt.keyCode === 13 && !evt.shiftKey) {
             evt.preventDefault();
             console.log("pressed enter");
             prompt_lock = true;
             setTimeout(()=>prompt_lock=false, 3000);
             await handle_ask();
         } else {
-            messageInput.style.removeProperty("height");
             messageInput.style.height = messageInput.scrollHeight  + "px";
         }
     });
-    sendButton.addEventListener(`click`, async () => {
+    sendButton.querySelector(".fa-paper-plane").addEventListener(`click`, async () => {
         console.log("clicked send");
         if (prompt_lock) return;
         prompt_lock = true;
         setTimeout(()=>prompt_lock=false, 3000);
+        stop_recognition();
         await handle_ask();
     });
-    messageInput.focus();
+    sendButton.querySelector(".fa-square-plus").addEventListener(`click`, async () => {
+        stop_recognition();
+        await handle_ask(false);
+    });
+    messageInput.addEventListener(`click`, async () => {
+        stop_recognition();
+    });
+
     let provider_options = [];
     models = await api("models");
     models.forEach((model) => {
         let option = document.createElement("option");
         option.value = model.name;
-        option.text = model.name + (model.image ? " (Image Generation)" : "");
+        option.text = model.name + (model.image ? " (Image Generation)" : "") + (model.vision ? " (Image Upload)" : "");
         option.dataset.providers = model.providers.join(" ");
         modelSelect.appendChild(option);
+        is_demo = model.demo;
     });
-    providers = await api("providers")
-    providers.sort((a, b) => a.label.localeCompare(b.label));
-    let login_urls = {};
-    providers.forEach((provider) => {
-        let option = document.createElement("option");
-        option.value = provider.name;
-        option.dataset.label = provider.label;
-        option.text = provider.label
-            + (provider.vision ? " (Image Upload)" : "")
-            + (provider.image ? " (Image Generation)" : "")
-            + (provider.webdriver ? " (Webdriver)" : "")
-            + (provider.auth ? " (Auth)" : "");
-        if (provider.parent)
-            option.dataset.parent = provider.parent;
-        providerSelect.appendChild(option);
-
-        if (provider.parent) {
-            if (!login_urls[provider.parent]) {
-                login_urls[provider.parent] = [provider.label, provider.login_url, [provider.name]];
-            } else {
-                login_urls[provider.parent][2].push(provider.name);
-            }
-        } else if (provider.login_url) {
-            if (!login_urls[provider.name]) {
-                login_urls[provider.name] = [provider.label, provider.login_url, []];
-            } else {
-                login_urls[provider.name][0] = provider.label;
-                login_urls[provider.name][1] = provider.login_url;
-            }
+    let login_urls;
+    if (is_demo) {
+        if (!localStorage.getItem("user")) {
+            location.href = "/";
+            return;
         }
-    });
+        providerSelect.innerHTML = `
+            <option value="">Demo Mode</option>
+            <option value="Feature">Feature Provider</option>
+            <option value="Custom">Custom Provider</option>`;
+        providerSelect.selectedIndex = 0;
+        document.getElementById("pin").disabled = true;
+        document.getElementById("refine")?.parentElement.classList.add("hidden")
+        const track_usage = document.getElementById("track_usage");
+        track_usage.checked = true;
+        track_usage.disabled = true;
+        Array.from(modelSelect.querySelectorAll(':not([data-providers])')).forEach((option)=>{
+            if (!option.disabled && option.value) {
+                option.remove();
+            }
+        });
+        login_urls = {
+            "Custom": ["Custom Provider", "", []],
+            "HuggingFace": ["HuggingFace", "", []],
+        };
+    } else {
+        providers = await api("providers")
+        providers.sort((a, b) => a.label.localeCompare(b.label));
+        login_urls = {};
+        providers.forEach((provider) => {
+            let option = document.createElement("option");
+            option.value = provider.name;
+            option.dataset.label = provider.label;
+            option.text = provider.label
+                + (provider.vision ? " (Image Upload)" : "")
+                + (provider.image ? " (Image Generation)" : "")
+                + (provider.nodriver ? " (Browser)" : "")
+                + (!provider.nodriver && provider.auth ? " (Auth)" : "");
+            if (provider.parent)
+                option.dataset.parent = provider.parent;
+            providerSelect.appendChild(option);
+
+            if (provider.parent) {
+                if (!login_urls[provider.parent]) {
+                    login_urls[provider.parent] = [provider.label, provider.login_url, [provider.name]];
+                } else {
+                    login_urls[provider.parent][2].push(provider.name);
+                }
+            } else if (provider.login_url) {
+                if (!login_urls[provider.name]) {
+                    login_urls[provider.name] = [provider.label, provider.login_url, []];
+                } else {
+                    login_urls[provider.name][0] = provider.label;
+                    login_urls[provider.name][1] = provider.login_url;
+                }
+            }
+        });
+
+        let providersContainer = document.createElement("div");
+        providersContainer.classList.add("field", "collapsible");
+        providersContainer.innerHTML = `
+            <div class="collapsible-header">
+                <span class="label">Providers (Enable/Disable)</span>
+                <i class="fa-solid fa-chevron-down"></i>
+            </div>
+            <div class="collapsible-content hidden"></div>
+        `;
+        settings.querySelector(".paper").appendChild(providersContainer);
+
+        providers.forEach((provider) => {
+            if (!provider.parent) {
+                let option = document.createElement("div");
+                option.classList.add("provider-item");
+                option.innerHTML = `
+                    <span class="label">Enable ${provider.label}</span>
+                    <input id="Provider${provider.name}" type="checkbox" name="Provider${provider.name}" value="${provider.name}" class="provider" checked="">
+                    <label for="Provider${provider.name}" class="toogle" title="Remove provider from dropdown"></label>
+                `;
+                option.querySelector("input").addEventListener("change", (event) => load_provider_option(event.target, provider.name));
+                providersContainer.querySelector(".collapsible-content").appendChild(option);
+                provider_options[provider.name] = option;
+            }
+        });
+
+        providersContainer.querySelector(".collapsible-header").addEventListener('click', (e) => {
+            providersContainer.querySelector(".collapsible-content").classList.toggle('hidden');
+            providersContainer.querySelector(".collapsible-header").classList.toggle('active');
+        });
+    }
+
+    if (appStorage.getItem("provider")) {
+        await load_provider_models(appStorage.getItem("provider"))
+    } else {
+        providerSelect.selectedIndex = 0;
+    }
+
+    let providersListContainer = document.createElement("div");
+    providersListContainer.classList.add("field", "collapsible");
+    providersListContainer.innerHTML = `
+        <div class="collapsible-header">
+            <span class="label">Providers API key</span>
+            <i class="fa-solid fa-chevron-down"></i>
+        </div>
+        <div class="collapsible-content hidden"></div>
+    `;
+    settings.querySelector(".paper").appendChild(providersListContainer);
+
     for (let [name, [label, login_url, childs]] of Object.entries(login_urls)) {
-        if (!login_url) {
+        if (!login_url && !is_demo) {
             continue;
         }
-        option = document.createElement("div");
-        option.classList.add("field", "box", "hidden");
-        childs = childs.map((child)=>`${child}-api_key`).join(" ");
-        option.innerHTML = `
+        let providerBox = document.createElement("div");
+        providerBox.classList.add("field", "box");
+        childs = childs.map((child) => `${child}-api_key`).join(" ");
+        providerBox.innerHTML = `
             <label for="${name}-api_key" class="label" title="">${label}:</label>
-            <input type="text" id="${name}-api_key" name="${name}[api_key]" class="${childs}" placeholder="api_key"/>
-            <a href="${login_url}" target="_blank" title="Login to ${label}">Get API key</a>
-        `;
-        settings.querySelector(".paper").appendChild(option);
+            <input type="text" id="${name}-api_key" name="${name}[api_key]" class="${childs}" placeholder="api_key" autocomplete="off"/>
+        ` + (login_url ? `<a href="${login_url}" target="_blank" title="Login to ${label}">Get API key</a>` : "");
+        providersListContainer.querySelector(".collapsible-content").appendChild(providerBox);
     }
-    providers.forEach((provider) => {
-        if (!provider.parent) {
-            option = document.createElement("div");
-            option.classList.add("field");
-            option.innerHTML = `
-                <span class="label">Enable ${provider.label}</span>
-                <input id="Provider${provider.name}" type="checkbox" name="Provider${provider.name}" value="${provider.name}" class="provider" checked="">
-                <label for="Provider${provider.name}" class="toogle" title="Remove provider from dropdown"></label>
-            `;
-            option.querySelector("input").addEventListener("change", (event) => load_provider_option(event.target, provider.name));
-            settings.querySelector(".paper").appendChild(option);
-            provider_options[provider.name] = option;
-        }
+
+    providersListContainer.querySelector(".collapsible-header").addEventListener('click', (e) => {
+        providersListContainer.querySelector(".collapsible-content").classList.toggle('hidden');
+        providersListContainer.querySelector(".collapsible-header").classList.toggle('active');
     });
-    await load_provider_models(appStorage.getItem("provider"))
 
     register_settings_storage();
-    await load_settings_storage()
+    await load_settings_storage();
     Object.entries(provider_options).forEach(
         ([provider_name, option]) => load_provider_option(option.querySelector("input"), provider_name)
     );
@@ -1863,6 +2097,7 @@ async function on_api() {
 
     const method = switchInput.checked ? "add" : "remove";
     searchButton.classList[method]("active");
+    document.getElementById('recognition-language').placeholder = get_navigator_language();
 }
 
 async function load_version() {
@@ -1957,7 +2192,7 @@ async function upload_files(fileInput) {
         body: formData
     });
 
-    let do_refine = document.getElementById("refine").checked;
+    let do_refine = document.getElementById("refine")?.checked;
     function connectToSSE(url) {
         const eventSource = new EventSource(url);
         eventSource.onmessage = (event) => {
@@ -1980,9 +2215,14 @@ async function upload_files(fileInput) {
                 }
                 appStorage.setItem(`bucket:${bucket_id}`, data.size);
                 inputCount.innerText = "Files are loaded successfully";
-                messageInput.value += (messageInput.value ? "\n" : "") + JSON.stringify({bucket_id: bucket_id}) + "\n";
-                paperclip.classList.remove("blink");
-                fileInput.value = "";
+                if (!messageInput.value) {
+                    messageInput.value = JSON.stringify({bucket_id: bucket_id});
+                    handle_ask(false);
+                } else {
+                    messageInput.value += (messageInput.value ? "\n" : "") + JSON.stringify({bucket_id: bucket_id}) + "\n";
+                    paperclip.classList.remove("blink");
+                    fileInput.value = "";
+                }
             }
         };
         eventSource.onerror = (event) => {
@@ -2038,6 +2278,10 @@ fileInput.addEventListener('change', async (event) => {
     }
 });
 
+if (!window.matchMedia("(pointer:coarse)").matches) {
+    document.getElementById("image").setAttribute("multiple", "multiple");
+}
+
 chatPrompt?.addEventListener("input", async () => {
     await save_system_message();
 });
@@ -2053,7 +2297,7 @@ function get_selected_model() {
     }
 }
 
-async function api(ressource, args=null, files=null, message_id=null, scroll=true) {
+async function api(ressource, args=null, files=null, message_id=null, scroll=true, finish_message=null) {
     if (window?.pywebview) {
         if (args !== null) {
             if (ressource == "conversation") {
@@ -2067,6 +2311,8 @@ async function api(ressource, args=null, files=null, message_id=null, scroll=tru
         return pywebview.api[`get_${ressource}`]();
     }
     const headers = {};
+    let url = `/backend-api/v2/${ressource}`;
+    let response;
     if (ressource == "models" && args) {
         api_key = get_api_key_by_provider(args);
         if (api_key) {
@@ -2076,10 +2322,8 @@ async function api(ressource, args=null, files=null, message_id=null, scroll=tru
         if (api_base) {
             headers.x_api_base = api_base;
         }
-        ressource = `${ressource}/${args}`;
-    }
-    const url = new URL(`/backend-api/v2/${ressource}`, window?.location || "http://localhost:8080");
-    if (ressource == "conversation") {
+        url = `/backend-api/v2/${ressource}/${args}`;
+    } else if (ressource == "conversation") {
         let body = JSON.stringify(args);
         headers.accept = 'text/event-stream';
         if (files !== null) {
@@ -2098,16 +2342,58 @@ async function api(ressource, args=null, files=null, message_id=null, scroll=tru
             headers: headers,
             body: body,
         });
-        return read_response(response, message_id, args.provider || null, scroll);
+        // On Ratelimit
+        if (response.status == 429) {
+            // They are still pending requests?
+            for (let key in controller_storage) {
+                if (!controller_storage[key].signal.aborted) {
+                    console.error(response);
+                    await finish_message();
+                    return;
+                }
+            }
+            setTimeout(async () => {
+                response = await fetch(url, {
+                    method: 'POST',
+                    signal: controller_storage[message_id].signal,
+                    headers: headers,
+                    body: body,
+                });
+                if (response.status != 200) {
+                    console.error(response);
+                }
+                await read_response(response, message_id, args.provider || null, scroll, finish_message);
+                await finish_message();
+            }, 20000) // Wait 20 secounds on rate limit
+        } else {
+            await read_response(response, message_id, args.provider || null, scroll, finish_message);
+            await finish_message();
+            return;
+        }
+    } else if (args) {
+        if (ressource == "log") {
+            if (!document.getElementById("report_error").checked) {
+                return;
+            }
+            url = `https://roxky-g4f-demo.hf.space${url}`;
+        }
+        headers['content-type'] = 'application/json';
+        response = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(args),
+        });
     }
-    response = await fetch(url, {headers: headers});
-    if (response.status == 200) {
-        return await response.json();
+    if (!response) {
+        response = await fetch(url, {headers: headers});
     }
-    console.error(response);
+    if (response.status != 200) {
+        console.error(response);
+    }
+    return await response.json();
 }
 
-async function read_response(response, message_id, provider, scroll) {
+async function read_response(response, message_id, provider, scroll, finish_message) {
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = ""
     while (true) {
@@ -2120,7 +2406,7 @@ async function read_response(response, message_id, provider, scroll) {
                 continue;
             }
             try {
-                add_message_chunk(JSON.parse(buffer + line), message_id, provider, scroll);
+                add_message_chunk(JSON.parse(buffer + line), message_id, provider, scroll, finish_message);
                 buffer = "";
             } catch {
                 buffer += line
@@ -2132,9 +2418,9 @@ async function read_response(response, message_id, provider, scroll) {
 function get_api_key_by_provider(provider) {
     let api_key = null;
     if (provider) {
-        api_key = document.getElementById(`${provider}-api_key`)?.id || null;
+        api_key = document.querySelector(`.${provider}-api_key`)?.id || null;
         if (api_key == null) {
-            api_key = document.querySelector(`.${provider}-api_key`)?.id || null;
+            api_key = document.getElementById(`${provider}-api_key`)?.id || null;
         }
         if (api_key) {
             api_key = appStorage.getItem(api_key);
@@ -2158,14 +2444,18 @@ async function load_provider_models(provider=null) {
     if (models && models.length > 0) {
         modelSelect.classList.add("hidden");
         modelProvider.classList.remove("hidden");
-        models.forEach((model) => {
+        let defaultIndex = 0;
+        models.forEach((model, i) => {
             let option = document.createElement('option');
             option.value = model.model;
             option.dataset.label = model.model;
             option.text = `${model.model}${model.image ? " (Image Generation)" : ""}${model.vision ? " (Image Upload)" : ""}`;
-            option.selected = model.default;
             modelProvider.appendChild(option);
+            if (model.default) {
+                defaultIndex = i;
+            }
         });
+        modelProvider.selectedIndex = defaultIndex;
         let value = appStorage.getItem(modelProvider.name);
         if (value) {
             modelProvider.value = value;
@@ -2175,7 +2465,12 @@ async function load_provider_models(provider=null) {
         modelSelect.classList.remove("hidden");
     }
 };
-providerSelect.addEventListener("change", () => load_provider_models());
+providerSelect.addEventListener("change", () => {
+    load_provider_models()
+    messageInput.focus();
+});
+modelSelect.addEventListener("change", () => messageInput.focus());
+modelProvider.addEventListener("change", () =>  messageInput.focus());
 
 document.getElementById("pin").addEventListener("click", async () => {
     const pin_container = document.getElementById("pin_container");
@@ -2210,6 +2505,7 @@ switchInput.addEventListener("change", () => {
 });
 searchButton.addEventListener("click", async () => {
     switchInput.click();
+    messageInput.focus();
 });
 
 function save_storage() {
@@ -2238,7 +2534,54 @@ function save_storage() {
     }
 }
 
+function import_memory() {
+    if (!appStorage.getItem("mem0-api_key")) {
+        return;
+    }
+    hide_sidebar();
+
+    let count = 0;
+    let user_id = appStorage.getItem("user") || appStorage.getItem("mem0-user_id");
+    if (!user_id) {
+        user_id = uuid();
+        appStorage.setItem("mem0-user_id", user_id);
+    }
+    inputCount.innerText = `Start importing to Mem0...`;
+    let conversations = [];
+    for (let i = 0; i < appStorage.length; i++) {
+        if (appStorage.key(i).startsWith("conversation:")) {
+            let conversation = appStorage.getItem(appStorage.key(i));
+            conversations.push(JSON.parse(conversation));
+        }
+    }
+    conversations.sort((a, b) => (a.updated||0)-(b.updated||0));
+    async function add_conversation_to_memory(i) {
+        if (i > conversations.length - 1) {
+            return;
+        }
+        let body = JSON.stringify(conversations[i]);
+        response = await fetch(`/backend-api/v2/memory/${user_id}`, {
+            method: 'POST',
+            body: body,
+            headers: {
+                "content-type": "application/json",
+                "x_api_key": appStorage.getItem("mem0-api_key")
+            }
+        });
+        const result = await response.json();
+        count += result.count;
+        inputCount.innerText = `${count} Messages were imported`;
+        add_conversation_to_memory(i + 1);
+    }
+    add_conversation_to_memory(0)
+}
+
+function get_navigator_language() {
+    return navigator.languages.filter((v)=>v.includes("-"))[0] || navigator.language;
+}
+
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let stop_recognition = ()=>{};
 if (SpeechRecognition) {
     const mircoIcon = microLabel.querySelector("i");
     mircoIcon.classList.add("fa-microphone");
@@ -2288,15 +2631,22 @@ if (SpeechRecognition) {
         }
     };
 
-    microLabel.addEventListener("click", (e) => {
+    stop_recognition = ()=>{
         if (microLabel.classList.contains("recognition")) {
             microLabel.classList.remove("recognition");
             recognition.stop();
             messageInput.value = `${startValue ? startValue + "\n" : ""}${buffer}`;
-        } else {
+            count_input();
+            return true;
+        }
+        return false;
+    }
+
+    microLabel.addEventListener("click", (e) => {
+        if (!stop_recognition()) {
             microLabel.classList.add("recognition");
             const lang = document.getElementById("recognition-language")?.value;
-            recognition.lang = lang || navigator.language;
+            recognition.lang = lang || get_navigator_language();
             recognition.start();
         }
     });

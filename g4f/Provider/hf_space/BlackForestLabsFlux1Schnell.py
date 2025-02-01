@@ -8,6 +8,7 @@ from ...image import ImageResponse
 from ...errors import ResponseError
 from ...requests.raise_for_status import raise_for_status
 from ..base_provider import AsyncGeneratorProvider, ProviderModelMixin
+from ..helper import format_image_prompt
 
 class BlackForestLabsFlux1Schnell(AsyncGeneratorProvider, ProviderModelMixin):
     url = "https://black-forest-labs-flux-1-schnell.hf.space"
@@ -17,9 +18,9 @@ class BlackForestLabsFlux1Schnell(AsyncGeneratorProvider, ProviderModelMixin):
     
     default_model = "black-forest-labs-flux-1-schnell"
     default_image_model = default_model
-    image_models = [default_image_model]
+    model_aliases = {"flux-schnell": default_model, "flux": default_model}
+    image_models = [default_image_model, *model_aliases.keys()]
     models = image_models
-    model_aliases = {"flux-schnell": default_model}
 
     @classmethod
     async def create_async_generator(
@@ -42,7 +43,7 @@ class BlackForestLabsFlux1Schnell(AsyncGeneratorProvider, ProviderModelMixin):
         height = max(32, height - (height % 8))
 
         if prompt is None:
-            prompt = messages[-1]["content"]
+            prompt = format_image_prompt(messages)
 
         payload = {
             "data": [
