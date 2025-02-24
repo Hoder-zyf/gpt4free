@@ -8,18 +8,19 @@ from flask import send_from_directory
 from inspect import signature
 
 from ...errors import VersionNotFoundError
-from ...image import ImagePreview, ImageResponse, copy_images, ensure_images_dir, images_dir
+from ...image.copy_images import copy_images, ensure_images_dir, images_dir
 from ...tools.run_tools import iter_run_tools
 from ...Provider import ProviderUtils, __providers__
 from ...providers.base_provider import ProviderModelMixin
-from ...providers.retry_provider import IterListProvider
-from ...providers.response import BaseConversation, JsonConversation, FinishReason, Usage
-from ...providers.response import SynthesizeData, TitleGeneration, RequestLogin, Parameters
+from ...providers.retry_provider import BaseRetryProvider
+from ...providers.helper import format_image_prompt
+from ...providers.response import *
 from ... import version, models
 from ... import ChatCompletion, get_model_and_provider
 from ... import debug
 
 logger = logging.getLogger(__name__)
+
 conversations: dict[dict[str, BaseConversation]] = {}
 
 class Api:
@@ -28,6 +29,7 @@ class Api:
         return [{
             "name": model.name,
             "image": isinstance(model, models.ImageModel),
+            "vision": isinstance(model, models.VisionModel),
             "providers": [
                 getattr(provider, "parent", provider.__name__)
                 for provider in providers
@@ -41,7 +43,7 @@ class Api:
         if provider in ProviderUtils.convert:
             provider = ProviderUtils.convert[provider]
             if issubclass(provider, ProviderModelMixin):
-                if api_key is not None and "api_key" in signature(provider.get_models).parameters:
+                if "api_key" in signature(provider.get_models).parameters:
                     models = provider.get_models(api_key=api_key, api_base=api_base)
                 else:
                     models = provider.get_models()
@@ -62,21 +64,25 @@ class Api:
             "name": provider.__name__,
             "label": provider.label if hasattr(provider, "label") else provider.__name__,
             "parent": getattr(provider, "parent", None),
-            "image": getattr(provider, "image_models", None) is not None,
+            "image": bool(getattr(provider, "image_models", False)),
             "vision": getattr(provider, "default_vision_model", None) is not None,
+            "nodriver": getattr(provider, "use_nodriver", False),
             "auth": provider.needs_auth,
             "login_url": getattr(provider, "login_url", None),
         } for provider in __providers__ if provider.working]
 
     @staticmethod
     def get_version() -> dict:
+        current_version = None
+        latest_version = None
         try:
             current_version = version.utils.current_version
+            latest_version = version.utils.latest_version
         except VersionNotFoundError:
-            current_version = None
+            pass
         return {
             "version": current_version,
-            "latest_version": version.utils.latest_version,
+            "latest_version": latest_version,
         }
 
     def serve_images(self, name):
@@ -84,7 +90,7 @@ class Api:
         return send_from_directory(os.path.abspath(images_dir), name)
 
     def _prepare_conversation_kwargs(self, json_data: dict, kwargs: dict):
-        model = json_data.get('model') or models.default
+        model = json_data.get('model')
         provider = json_data.get('provider')
         messages = json_data.get('messages')
         api_key = json_data.get("api_key")
@@ -99,14 +105,9 @@ class Api:
             },
             "type": "function"
         }]
-        do_web_search = json_data.get('web_search')
-        if do_web_search and provider:
-            kwargs["tool_calls"].append({
-                "function": {
-                    "name": "safe_search_tool"
-                },
-                "type": "function"
-            })
+        web_search = json_data.get('web_search')
+        if web_search:
+            kwargs["web_search"] = web_search
         action = json_data.get('action')
         if action == "continue":
             kwargs["tool_calls"].append({
@@ -140,10 +141,10 @@ class Api:
         }
 
     def _create_response_stream(self, kwargs: dict, conversation_id: str, provider: str, download_images: bool = True) -> Iterator:
-        def decorated_log(text: str):
+        def decorated_log(text: str, file = None):
             debug.logs.append(text)
             if debug.logging:
-                debug.log_handler(text)
+                debug.log_handler(text, file=file)
         debug.log = decorated_log
         proxy = os.environ.get("G4F_PROXY")
         provider = kwargs.get("provider")
@@ -152,34 +153,29 @@ class Api:
                 kwargs.get("model"), provider,
                 stream=True,
                 ignore_stream=True,
-                logging=False
+                logging=False,
+                has_images="images" in kwargs,
             )
         except Exception as e:
-            logger.exception(e)
-            yield self._format_json('error', get_error_message(e))
+            debug.error(e)
+            yield self._format_json('error', type(e).__name__, message=get_error_message(e))
             return
-        params = {
-            **(provider_handler.get_parameters(as_json=True) if hasattr(provider_handler, "get_parameters") else {}),
-            "model": model,
-            "messages": kwargs.get("messages"),
-            "web_search": kwargs.get("web_search")
-        }
-        if isinstance(kwargs.get("conversation"), JsonConversation):
-            params["conversation"] = kwargs.get("conversation").get_dict()
-        else:
-            params["conversation_id"] = conversation_id
-        if kwargs.get("api_key") is not None:
-            params["api_key"] = kwargs["api_key"]
-        yield self._format_json("parameters", params)
-        first = True
+        if not isinstance(provider_handler, BaseRetryProvider):
+            if not provider:
+                provider = provider_handler.__name__
+            yield self.handle_provider(provider_handler, model)
+            if hasattr(provider_handler, "get_parameters"):
+                yield self._format_json("parameters", provider_handler.get_parameters(as_json=True))
         try:
             result = iter_run_tools(ChatCompletion.create, **{**kwargs, "model": model, "provider": provider_handler})
             for chunk in result:
-                if first:
-                    first = False
-                    yield self.handle_provider(provider_handler, model)
-                if isinstance(chunk, BaseConversation):
+                if isinstance(chunk, ProviderInfo):
+                    yield self.handle_provider(chunk, model)
+                    provider = chunk.name
+                elif isinstance(chunk, BaseConversation):
                     if provider is not None:
+                        if hasattr(provider, "__name__"):
+                            provider = provider.__name__
                         if provider not in conversations:
                             conversations[provider] = {}
                         conversations[provider][conversation_id] = chunk
@@ -191,15 +187,19 @@ class Api:
                             yield self._format_json("conversation_id", conversation_id)
                 elif isinstance(chunk, Exception):
                     logger.exception(chunk)
-                    yield self._format_json("message", get_error_message(chunk))
-                elif isinstance(chunk, ImagePreview):
+                    debug.error(chunk)
+                    yield self._format_json('message', get_error_message(chunk), error=type(chunk).__name__)
+                elif isinstance(chunk, PreviewResponse):
                     yield self._format_json("preview", chunk.to_string())
+                elif isinstance(chunk, ImagePreview):
+                    yield self._format_json("preview", chunk.to_string(), images=chunk.images, alt=chunk.alt)
                 elif isinstance(chunk, ImageResponse):
                     images = chunk
-                    if download_images:
-                        images = asyncio.run(copy_images(chunk.get_list(), chunk.get("cookies"), proxy))
+                    if download_images or chunk.get("cookies"):
+                        chunk.alt = format_image_prompt(kwargs.get("messages"), chunk.alt)
+                        images = asyncio.run(copy_images(chunk.get_list(), chunk.get("cookies"), proxy=proxy, alt=chunk.alt))
                         images = ImageResponse(images, chunk.alt)
-                    yield self._format_json("content", str(images))
+                    yield self._format_json("content", str(images), images=chunk.get_list(), alt=chunk.alt)
                 elif isinstance(chunk, SynthesizeData):
                     yield self._format_json("synthesize", chunk.get_dict())
                 elif isinstance(chunk, TitleGeneration):
@@ -212,30 +212,45 @@ class Api:
                     yield self._format_json("finish", chunk.get_dict())
                 elif isinstance(chunk, Usage):
                     yield self._format_json("usage", chunk.get_dict())
+                elif isinstance(chunk, Reasoning):
+                    yield self._format_json("reasoning", **chunk.get_dict())
+                elif isinstance(chunk, DebugResponse):
+                    yield self._format_json("log", chunk.log)
+                elif isinstance(chunk, RawResponse):
+                    yield self._format_json(chunk.type, **chunk.get_dict())
                 else:
                     yield self._format_json("content", str(chunk))
-                if debug.logs:
-                    for log in debug.logs:
-                        yield self._format_json("log", str(log))
-                    debug.logs = []
+                yield from self._yield_logs()
         except Exception as e:
             logger.exception(e)
-            yield self._format_json('error', get_error_message(e))
-        if first:
-            yield self.handle_provider(provider_handler, model)
+            debug.error(e)
+            yield from self._yield_logs()
+            yield self._format_json('error', type(e).__name__, message=get_error_message(e))
 
-    def _format_json(self, response_type: str, content):
+    def _yield_logs(self):
+        if debug.logs:
+            for log in debug.logs:
+                yield self._format_json("log", log)
+            debug.logs = []
+
+    def _format_json(self, response_type: str, content = None, **kwargs):
+        if content is not None and isinstance(response_type, str):
+            return {
+                'type': response_type,
+                response_type: content,
+                **kwargs
+            }
         return {
             'type': response_type,
-            response_type: content
+            **kwargs
         }
 
     def handle_provider(self, provider_handler, model):
-        if isinstance(provider_handler, IterListProvider) and provider_handler.last_provider is not None:
+        if isinstance(provider_handler, BaseRetryProvider) and provider_handler.last_provider is not None:
             provider_handler = provider_handler.last_provider
-        if not model and hasattr(provider_handler, "last_model") and provider_handler.last_model is not None:
-            model = provider_handler.last_model
-        return self._format_json("provider", {**provider_handler.get_dict(), "model": model})
+        if model:
+            return self._format_json("provider", {**provider_handler.get_dict(), "model": model})
+        return self._format_json("provider", provider_handler.get_dict())
 
 def get_error_message(exception: Exception) -> str:
     return f"{type(exception).__name__}: {exception}"

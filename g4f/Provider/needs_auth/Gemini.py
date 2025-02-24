@@ -19,12 +19,13 @@ from ... import debug
 from ...typing import Messages, Cookies, ImagesType, AsyncResult, AsyncIterator
 from ..base_provider import AsyncGeneratorProvider, ProviderModelMixin
 from ..helper import format_prompt, get_cookies
-from ...providers.response import JsonConversation, SynthesizeData, RequestLogin
+from ...providers.response import JsonConversation, Reasoning, RequestLogin, ImageResponse
 from ...requests.raise_for_status import raise_for_status
 from ...requests.aiohttp import get_connector
 from ...requests import get_nodriver
 from ...errors import MissingAuthError
-from ...image import ImageResponse, to_bytes
+from ...image import to_bytes
+from ..helper import get_last_user_message
 from ... import debug
 
 REQUEST_HEADERS = {
@@ -52,21 +53,34 @@ UPLOAD_IMAGE_HEADERS = {
     "x-tenant-id": "bard-storage",
 }
 
+models = {
+    "gemini-2.0-flash": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"f299729663a2343f"]'},
+    "gemini-2.0-flash-exp": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"f299729663a2343f"]'},
+    "gemini-2.0-flash-thinking": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"9c17b1863f581b8a"]'},
+    "gemini-2.0-flash-thinking-with-apps": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"f8f8f5ea629f5d37"]'},
+    "gemini-2.0-exp-advanced": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"b1e46a6037e6aa9f"]'},
+    "gemini-1.5-flash": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"418ab5ea040b5c43"]'},
+    "gemini-1.5-pro": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"9d60dfae93c9ff1f"]'},
+    "gemini-1.5-pro-research": {"x-goog-ext-525001261-jspb": '[null,null,null,null,"e5a44cb1dae2b489"]'},
+}
+
 class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
     label = "Google Gemini"
     url = "https://gemini.google.com"
     
     needs_auth = True
     working = True
+    use_nodriver = True
     
-    default_model = 'gemini'
-    image_models = ["gemini"]
-    default_vision_model = "gemini"
-    models = ["gemini", "gemini-1.5-flash", "gemini-1.5-pro"]
-    model_aliases = {
-        "gemini-flash": "gemini-1.5-flash",
-        "gemini-pro": "gemini-1.5-pro",
-    }
+    default_model = ""
+    default_image_model = default_model
+    default_vision_model = default_model
+    image_models = [default_image_model]
+    models = [
+        default_model, *models.keys()
+    ]
+    model_aliases = {"gemini-2.0": ""}
+
     synthesize_content_type = "audio/vnd.wav"
     
     _cookies: Cookies = None
@@ -79,17 +93,20 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
             if debug.logging:
                 print("Skip nodriver login in Gemini provider")
             return
-        browser = await get_nodriver(proxy=proxy, user_data_dir="gemini")
-        login_url = os.environ.get("G4F_LOGIN_URL")
-        if login_url:
-            yield RequestLogin(cls.label, login_url)
-        page = await browser.get(f"{cls.url}/app")
-        await page.select("div.ql-editor.textarea", 240)
-        cookies = {}
-        for c in await page.send(nodriver.cdp.network.get_cookies([cls.url])):
-            cookies[c.name] = c.value
-        await page.close()
-        cls._cookies = cookies
+        browser, stop_browser = await get_nodriver(proxy=proxy, user_data_dir="gemini")
+        try:
+            login_url = os.environ.get("G4F_LOGIN_URL")
+            if login_url:
+                yield RequestLogin(cls.label, login_url)
+            page = await browser.get(f"{cls.url}/app")
+            await page.select("div.ql-editor.textarea", 240)
+            cookies = {}
+            for c in await page.send(nodriver.cdp.network.get_cookies([cls.url])):
+                cookies[c.name] = c.value
+            await page.close()
+            cls._cookies = cookies
+        finally:
+            stop_browser()
 
     @classmethod
     async def create_async_generator(
@@ -105,7 +122,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
         language: str = "en",
         **kwargs
     ) -> AsyncResult:
-        prompt = format_prompt(messages) if conversation is None else messages[-1]["content"]
+        prompt = format_prompt(messages) if conversation is None else get_last_user_message(messages)
         cls._cookies = cookies or cls._cookies or get_cookies(".google.com", False, True)
         base_connector = get_connector(connector, proxy)
 
@@ -128,7 +145,6 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
             if not cls._snlm0e:
                 raise RuntimeError("Invalid cookies. SNlM0e not found")
 
-            yield SynthesizeData(cls.__name__, {"text": messages[-1]["content"]})
             images = await cls.upload_images(base_connector, images) if images else None
             async with ClientSession(
                 cookies=cls._cookies,
@@ -155,6 +171,7 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
                     REQUEST_URL,
                     data=data,
                     params=params,
+                    headers=models[model] if model in models else None
                 ) as response:
                     await raise_for_status(response)
                     image_prompt = response_part = None
@@ -174,16 +191,43 @@ class Gemini(AsyncGeneratorProvider, ProviderModelMixin):
                                 continue
                             if return_conversation:
                                 yield Conversation(response_part[1][0], response_part[1][1], response_part[4][0][0])
+                            def read_recusive(data):
+                                for item in data:
+                                    if isinstance(item, list):
+                                        yield from read_recusive(item)
+                                    elif isinstance(item, str) and not item.startswith("rc_"):
+                                        yield item
+                            def find_str(data, skip=0):
+                                for item in read_recusive(data):
+                                    if skip > 0:
+                                        skip -= 1
+                                        continue
+                                    yield item
+                            reasoning = "\n\n".join(find_str(response_part[4][0], 3))
+                            reasoning = re.sub(r"<b>|</b>", "**", reasoning)
+                            def replace_image(match):
+                                return f"![](https:{match.group(0)})"
+                            reasoning = re.sub(r"//yt3.(?:ggpht.com|googleusercontent.com/ytc)/[\w=-]+", replace_image, reasoning)
+                            reasoning = re.sub(r"\nyoutube\n", "\n\n\n", reasoning)
+                            reasoning = re.sub(r"\nYouTube\n", "\nYouTube ", reasoning)
+                            reasoning = reasoning.replace('https://www.gstatic.com/images/branding/productlogos/youtube/v9/192px.svg', '<i class="fa-brands fa-youtube"></i>')
                             content = response_part[4][0][1][0]
+                            if reasoning:
+                                yield Reasoning(status="🤔")
+                                yield Reasoning(reasoning)
                         except (ValueError, KeyError, TypeError, IndexError) as e:
-                            debug.log(f"{cls.__name__}:{e.__class__.__name__}:{e}")
+                            debug.error(f"{cls.__name__} {type(e).__name__}: {e}")
                             continue
                         match = re.search(r'\[Imagen of (.*?)\]', content)
                         if match:
                             image_prompt = match.group(1)
                             content = content.replace(match.group(0), '')
-                        pattern = r"http://googleusercontent.com/image_generation_content/\d+"
+                        pattern = r"http://googleusercontent.com/(?:image_generation|youtube)_content/\d+"
                         content = re.sub(pattern, "", content)
+                        content = content.replace("<!-- end list -->", "")
+                        content = content.replace("https://www.google.com/search?q=http://", "https://")
+                        content = content.replace("https://www.google.com/search?q=https://", "https://")
+                        content = content.replace("https://www.google.com/url?sa=E&source=gmail&q=http://", "http://")
                         if last_content and content.startswith(last_content):
                             yield content[len(last_content):]
                         else:
