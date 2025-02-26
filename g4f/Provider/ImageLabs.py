@@ -5,7 +5,7 @@ import time
 import asyncio
 
 from ..typing import AsyncResult, Messages
-from ..image import ImageResponse
+from ..providers.response import ImageResponse
 from .base_provider import AsyncGeneratorProvider, ProviderModelMixin
 
 
@@ -18,7 +18,7 @@ class ImageLabs(AsyncGeneratorProvider, ProviderModelMixin):
     supports_system_message = False
     supports_message_history = False
     
-    default_model = 'general'
+    default_model = 'sdxl-turbo'
     default_image_model = default_model
     image_models = [default_image_model]
     models = image_models

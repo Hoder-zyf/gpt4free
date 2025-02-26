@@ -60,6 +60,8 @@ DOMAINS = [
     "chatgpt.com",
     ".cerebras.ai",
     "github.com",
+    "huggingface.co",
+    ".huggingface.co"
 ]
 
 if has_browser_cookie3 and os.environ.get('DBUS_SESSION_BUS_ADDRESS') == "/dev/null":
@@ -190,5 +192,5 @@ def read_cookie_files(dirPath: str = None):
                         new_cookies[c["domain"]] = {}
                     new_cookies[c["domain"]][c["name"]] = c["value"]
             for domain, new_values in new_cookies.items():
-                debug.log(f"Cookies added: {len(new_values)} from {domain}")
                 CookiesConfig.cookies[domain] = new_values
+                debug.log(f"Cookies added: {len(new_values)} from {domain}")
